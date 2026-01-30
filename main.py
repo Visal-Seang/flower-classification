@@ -197,16 +197,16 @@ def main():
                 },
             )
 
-        # Display detection results as text
+        # Display detection results as text (exactly like the image)
         if LATEST_RESULT["label"]:
             conf = LATEST_RESULT["confidence"]
             label = LATEST_RESULT["label"]
 
-            st.success(f"**Detected: {label}** (Confidence: {conf * 100:.1f}%)")
+            # Green box with detected result
+            st.success(f"Detected: {label} (Confidence: {conf * 100:.1f}%)")
 
-            # Show all predictions as simple text
-            for lbl, prob in LATEST_RESULT["all_results"]:
-                st.write(f"{lbl}: {prob * 100:.1f}%")
+            # Simple text below showing percentage
+            st.write(f"{label}: {conf * 100:.1f}%")
 
         st.markdown(
             """
