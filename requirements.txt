@@ -3,5 +3,3 @@ tensorflow==2.15.0
 tf-keras
 pillow
 numpy
-streamlit-webrtc
-av

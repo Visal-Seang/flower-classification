@@ -1,10 +1,8 @@
 import streamlit as st
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import tf_keras
 from tf_keras.layers import DepthwiseConv2D
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase
-import av
 
 st.set_page_config(page_title="Flower Classification", page_icon="🌸", layout="wide")
 
@@ -45,96 +43,50 @@ def preprocess_image(image):
     return np.expand_dims(arr, axis=0)
 
 
-# Load model and labels globally for the video processor
-MODEL = None
-LABELS = None
-LATEST_RESULT = {"label": "", "confidence": 0.0, "all_results": []}
+def predict_flower(image, model, labels):
+    """Make prediction and return results"""
+    processed = preprocess_image(image)
+    predictions = model.predict(processed, verbose=0)
+    
+    predicted_class = np.argmax(predictions[0])
+    confidence = float(predictions[0][predicted_class])
+    label = labels.get(predicted_class, "Unknown")
+    
+    all_results = sorted(
+        [(labels[i], float(predictions[0][i])) for i in labels],
+        key=lambda x: -x[1],
+    )
+    
+    return label, confidence, all_results
 
 
-class FlowerDetector(VideoProcessorBase):
-    def __init__(self):
-        self.model = MODEL
-        self.result_label = ""
-        self.result_confidence = 0.0
-        self.labels = LABELS
-
-    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        if frame is None:
-            return frame
-
-        # Convert frame to numpy array (BGR format)
-        img = frame.to_ndarray(format="bgr24")
-
-        # Convert BGR to RGB for prediction
-        img_rgb = img[:, :, ::-1].copy()
-        pil_image = Image.fromarray(img_rgb)
-
-        # Run prediction
-        try:
-            if self.model is None or self.labels is None:
-                return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-            processed = preprocess_image(pil_image)
-            predictions = self.model.predict(processed, verbose=0)
-
-            predicted_class = np.argmax(predictions[0])
-            confidence = float(predictions[0][predicted_class])
-            label = self.labels.get(predicted_class, "Unknown")
-
-            # Store results globally for display
-            all_results = sorted(
-                [(self.labels[i], float(predictions[0][i])) for i in self.labels],
-                key=lambda x: -x[1],
-            )
-            LATEST_RESULT["label"] = label
-            LATEST_RESULT["confidence"] = confidence
-            LATEST_RESULT["all_results"] = all_results
-
-            # Choose color based on confidence (BGR format for OpenCV)
-            if confidence > 0.7:
-                color = (0, 255, 0)  # Green
-            elif confidence > 0.4:
-                color = (0, 165, 255)  # Orange
-            else:
-                color = (0, 0, 255)  # Red
-
-            # Draw result on frame using PIL for better text rendering
-            pil_frame = Image.fromarray(img)
-            draw = ImageDraw.Draw(pil_frame)
-
-            # Draw background rectangle
-            draw.rectangle([10, 10, 400, 70], fill=color)
-
-            # Draw text
-            text = f"{label}: {confidence * 100:.1f}%"
-            draw.text((20, 20), text, fill=(255, 255, 255))
-
-            # Draw border around frame
-            border_width = 8
-            w, h = pil_frame.size
-            draw.rectangle([0, 0, w - 1, border_width], fill=color)
-            draw.rectangle([0, h - border_width, w - 1, h - 1], fill=color)
-            draw.rectangle([0, 0, border_width, h - 1], fill=color)
-            draw.rectangle([w - border_width, 0, w - 1, h - 1], fill=color)
-
-            img = np.array(pil_frame)
-
-        except Exception as e:
-            pass
-
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+def display_results(label, confidence, all_results):
+    """Display prediction results with proper formatting"""
+    emoji = "🌸" if confidence > 0.7 else "🤔" if confidence > 0.4 else "❓"
+    
+    if confidence > 0.7:
+        st.success(f"## {emoji} {label}")
+    elif confidence > 0.4:
+        st.warning(f"## {emoji} {label}")
+    else:
+        st.error(f"## {emoji} {label}")
+    
+    st.metric("Confidence", f"{confidence * 100:.1f}%")
+    
+    st.markdown("**All Predictions:**")
+    for lbl, prob in all_results:
+        icon = "🟢" if prob > 0.7 else "🟠" if prob > 0.4 else "🔴"
+        st.progress(prob, text=f"{icon} {lbl}: {prob * 100:.1f}%")
 
 
 def main():
-    global MODEL, LABELS
-
-    st.title("🌸 Real-Time Flower Classification")
-    st.caption("Point your camera at a Tulip, Rose, or Sunflower!")
+    st.title("🌸 Flower Classification")
+    st.caption("Take a photo or upload an image of a Tulip, Rose, or Sunflower!")
 
     # Load model and labels
     try:
-        MODEL = load_model()
-        LABELS = load_labels()
+        model = load_model()
+        labels = load_labels()
         st.success("✅ Model loaded successfully!")
     except Exception as e:
         st.error(f"Error loading model: {e}")
@@ -145,10 +97,10 @@ def main():
         st.header("📖 Instructions")
         st.markdown(
             """
-        1. Click **START** below
-        2. Allow camera access
-        3. Point camera at a flower
-        4. See real-time predictions!
+        1. Click **Take Photo** or **Browse files**
+        2. Allow camera access (for camera)
+        3. Point at a flower and capture
+        4. See instant predictions!
         """
         )
 
@@ -173,68 +125,30 @@ def main():
         )
 
     # Main content with tabs
-    tab1, tab2 = st.tabs(["📹 Real-Time Detection", "📁 Upload Image"])
+    tab1, tab2 = st.tabs(["📸 Camera Capture", "📁 Upload Image"])
 
     with tab1:
-        st.markdown("### 🎥 Live Camera Feed")
-        st.info("Click **START** to begin real-time flower detection!")
+        st.markdown("### 📸 Take a Photo")
+        st.info("Click the button below to take a photo of a flower!")
 
-        # Create columns to make camera smaller and centered
-        col1, col2, col3 = st.columns([1, 2, 1])
+        # Camera input - simpler and more reliable than webrtc
+        camera_photo = st.camera_input("Take a picture")
 
-        with col2:
-            # WebRTC streamer for real-time video with HD quality
-            ctx = webrtc_streamer(
-                key="flower-detection",
-                mode=WebRtcMode.SENDRECV,
-                video_processor_factory=FlowerDetector,
-                media_stream_constraints={
-                    "video": {
-                        "width": {"ideal": 640},
-                        "height": {"ideal": 480},
-                        "frameRate": {"ideal": 30},
-                    },
-                    "audio": False,
-                },
-                async_processing=True,
-                rtc_configuration={
-                    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-                },
-            )
-
-            # Show status when connection is active
-            if ctx and ctx.state.playing:
-                st.success("🎥 Camera is active!")
-
-        # Display detection results as text
-        st.markdown("---")
-        st.markdown("### 📊 Detection Results")
-
-        result_col1, result_col2 = st.columns([1, 1])
-
-        with result_col1:
-            if LATEST_RESULT["label"]:
-                conf = LATEST_RESULT["confidence"]
-                label = LATEST_RESULT["label"]
-
-                if conf > 0.7:
-                    st.success(f"## 🌸 {label}")
-                elif conf > 0.4:
-                    st.warning(f"## 🤔 {label}")
-                else:
-                    st.error(f"## ❓ {label}")
-
-                st.metric("Confidence", f"{conf * 100:.1f}%")
-            else:
-                st.info("Waiting for detection... Start the camera!")
-
-        with result_col2:
-            if LATEST_RESULT["all_results"]:
-                st.markdown("**All Predictions:**")
-                for lbl, prob in LATEST_RESULT["all_results"]:
-                    icon = "🟢" if prob > 0.7 else "🟠" if prob > 0.4 else "🔴"
-                    st.progress(prob, text=f"{icon} {lbl}: {prob * 100:.1f}%")
-
+        if camera_photo:
+            # Read the image
+            image = Image.open(camera_photo)
+            
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                st.image(image, caption="Captured Image", use_container_width=True)
+            
+            with col2:
+                with st.spinner("Analyzing..."):
+                    label, confidence, all_results = predict_flower(image, model, labels)
+                
+                display_results(label, confidence, all_results)
+        
         st.markdown(
             """
         ---
@@ -261,34 +175,9 @@ def main():
 
             with col2:
                 with st.spinner("Analyzing..."):
-                    processed = preprocess_image(image)
-                    predictions = MODEL.predict(processed, verbose=0)
-
-                    predicted_class = np.argmax(predictions[0])
-                    confidence = float(predictions[0][predicted_class])
-                    label = LABELS.get(predicted_class, "Unknown")
-
-                    results = sorted(
-                        [(LABELS[i], float(predictions[0][i])) for i in LABELS],
-                        key=lambda x: -x[1],
-                    )
-
-                # Display results
-                emoji = "🌸" if confidence > 0.7 else "🤔" if confidence > 0.4 else "❓"
-
-                if confidence > 0.7:
-                    st.success(f"## {emoji} {label}")
-                elif confidence > 0.4:
-                    st.warning(f"## {emoji} {label}")
-                else:
-                    st.error(f"## {emoji} {label}")
-
-                st.metric("Confidence", f"{confidence * 100:.1f}%")
-
-                st.markdown("**All Predictions:**")
-                for lbl, prob in results:
-                    icon = "🟢" if prob > 0.7 else "🟠" if prob > 0.4 else "🔴"
-                    st.progress(prob, text=f"{icon} {lbl}: {prob * 100:.1f}%")
+                    label, confidence, all_results = predict_flower(image, model, labels)
+                
+                display_results(label, confidence, all_results)
 
 
 if __name__ == "__main__":
