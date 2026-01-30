@@ -161,17 +161,29 @@ def main():
         st.markdown("### 🎥 Live Camera Feed")
         st.info("Click **START** to begin real-time flower detection!")
 
-        # WebRTC streamer for real-time video
-        webrtc_streamer(
-            key="flower-detection",
-            mode=WebRtcMode.SENDRECV,
-            video_processor_factory=FlowerDetector,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-            rtc_configuration={
-                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-            },
-        )
+        # Create columns to make camera smaller and centered
+        col1, col2, col3 = st.columns([1, 2, 1])
+
+        with col2:
+            # WebRTC streamer for real-time video with HD quality
+            webrtc_streamer(
+                key="flower-detection",
+                mode=WebRtcMode.SENDRECV,
+                video_processor_factory=FlowerDetector,
+                media_stream_constraints={
+                    "video": {
+                        "width": {"ideal": 640},
+                        "height": {"ideal": 480},
+                        "frameRate": {"ideal": 30},
+                        "facingMode": "environment",  # Use back camera on mobile
+                    },
+                    "audio": False,
+                },
+                async_processing=True,
+                rtc_configuration={
+                    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+                },
+            )
 
         st.markdown(
             """
