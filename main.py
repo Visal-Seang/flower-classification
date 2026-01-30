@@ -6,6 +6,7 @@ from tf_keras.layers import DepthwiseConv2D
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase
 import av
 import threading
+import time
 
 st.set_page_config(page_title="Flower Classification", page_icon="🌸", layout="wide")
 
@@ -58,14 +59,14 @@ class ResultStore:
         self.label = ""
         self.confidence = 0.0
         self.all_results = []
-        self.updated = False
+        self.last_update_time = 0
 
     def update(self, label, confidence, all_results):
         with self.lock:
             self.label = label
             self.confidence = confidence
             self.all_results = all_results
-            self.updated = True
+            self.last_update_time = time.time()
 
     def get(self):
         with self.lock:
@@ -73,12 +74,8 @@ class ResultStore:
                 "label": self.label,
                 "confidence": self.confidence,
                 "all_results": self.all_results.copy(),
-                "updated": self.updated,
+                "last_update_time": self.last_update_time,
             }
-
-    def mark_read(self):
-        with self.lock:
-            self.updated = False
 
 
 # Global result store
@@ -123,18 +120,11 @@ class FlowerDetector(VideoProcessorBase):
             else:
                 color = (0, 0, 255)  # Red
 
-            # Draw result on frame using PIL
+            # Only draw border around frame (NO TEXT ON VIDEO)
             pil_frame = Image.fromarray(img)
             draw = ImageDraw.Draw(pil_frame)
 
-            # Draw background rectangle for text
-            draw.rectangle([10, 10, 400, 70], fill=color)
-
-            # Draw text
-            text = f"{label}: {confidence * 100:.1f}%"
-            draw.text((20, 20), text, fill=(255, 255, 255))
-
-            # Draw border around frame
+            # Draw colored border around frame
             border_width = 8
             w, h = pil_frame.size
             draw.rectangle([0, 0, w - 1, border_width], fill=color)
@@ -155,10 +145,6 @@ def main():
 
     st.title("🌸 Real-Time Flower Classification")
     st.caption("Point your camera at a Tulip, Rose, or Sunflower!")
-
-    # Initialize session state
-    if "detection_count" not in st.session_state:
-        st.session_state.detection_count = 0
 
     # Load model and labels
     try:
@@ -208,10 +194,10 @@ def main():
         st.markdown("### 🎥 Live Camera Feed")
         st.info("Click **START** to begin real-time flower detection!")
 
-        # Create columns to make camera smaller and centered
-        col1, col2, col3 = st.columns([1, 2, 1])
+        # Create two columns: camera on left, results on right
+        col_camera, col_results = st.columns([1, 1])
 
-        with col2:
+        with col_camera:
             # WebRTC streamer for real-time video
             ctx = webrtc_streamer(
                 key="flower-detection",
@@ -232,57 +218,75 @@ def main():
                 },
             )
 
-        # Real-time results display section
-        st.markdown("---")
-        st.markdown("### 📊 Detection Results")
+        # Real-time results display - SEPARATE FROM CAMERA
+        with col_results:
+            st.markdown("### 📊 Detection Results")
 
-        # Get latest results from store
-        results = RESULT_STORE.get()
+            # Create placeholders for real-time updates
+            status_placeholder = st.empty()
+            result_text_placeholder = st.empty()
+            confidence_placeholder = st.empty()
+            progress_placeholder = st.empty()
+            all_results_placeholder = st.empty()
 
-        if ctx.state.playing and results["label"]:
-            label = results["label"]
-            conf = results["confidence"]
-            all_results = results["all_results"]
+            # Continuous update loop
+            if ctx.state.playing:
+                while ctx.state.playing:
+                    results = RESULT_STORE.get()
 
-            # Main detection display
-            col_a, col_b = st.columns([2, 1])
+                    # Check if we have recent results (within last 2 seconds)
+                    if (
+                        results["label"]
+                        and (time.time() - results["last_update_time"]) < 2
+                    ):
+                        label = results["label"]
+                        conf = results["confidence"]
+                        all_results = results["all_results"]
 
-            with col_a:
-                # Big text showing current detection
-                if conf > 0.7:
-                    st.success(f"### 🌸 {label}")
-                    st.markdown(f"**Confidence: {conf * 100:.1f}%**")
-                elif conf > 0.4:
-                    st.warning(f"### 🤔 {label}")
-                    st.markdown(f"**Confidence: {conf * 100:.1f}%**")
-                else:
-                    st.error(f"### ❓ {label}")
-                    st.markdown(f"**Confidence: {conf * 100:.1f}%**")
+                        # Status message
+                        if conf > 0.7:
+                            status_placeholder.success("✅ **Detection Active**")
+                        elif conf > 0.4:
+                            status_placeholder.warning("⚠️ **Detection Active**")
+                        else:
+                            status_placeholder.error("❓ **Low Confidence**")
 
-            with col_b:
-                # Confidence metric
-                st.metric(label="Confidence", value=f"{conf * 100:.1f}%", delta=None)
+                        # Large result text
+                        result_text_placeholder.markdown(f"# {label}")
 
-            # Progress bar for main prediction
-            st.progress(conf, text=f"{label}: {conf * 100:.1f}%")
+                        # Confidence percentage
+                        confidence_placeholder.markdown(
+                            f"### Confidence: {conf * 100:.1f}%"
+                        )
 
-            # All predictions breakdown
-            with st.expander("📋 View All Predictions", expanded=True):
-                for lbl, prob in all_results:
-                    icon = "🟢" if prob > 0.7 else "🟠" if prob > 0.4 else "🔴"
-                    st.progress(prob, text=f"{icon} {lbl}: {prob * 100:.1f}%")
+                        # Progress bar
+                        progress_placeholder.progress(conf)
 
-            # Update counter to trigger re-render
-            st.session_state.detection_count += 1
+                        # All predictions
+                        with all_results_placeholder.container():
+                            st.markdown("---")
+                            st.markdown("**📋 All Predictions:**")
+                            for lbl, prob in all_results:
+                                icon = (
+                                    "🟢" if prob > 0.7 else "🟠" if prob > 0.4 else "🔴"
+                                )
+                                st.write(f"{icon} **{lbl}**: {prob * 100:.1f}%")
+                                st.progress(prob)
+                    else:
+                        # Show waiting state
+                        status_placeholder.info("🔍 **Waiting for flower...**")
+                        result_text_placeholder.markdown("### Point camera at a flower")
+                        confidence_placeholder.empty()
+                        progress_placeholder.empty()
+                        all_results_placeholder.empty()
 
-        elif ctx.state.playing:
-            st.info("🔍 Camera active... Point at a flower to detect")
-        else:
-            st.info("▶️ Click START above to begin detection")
-
-        # Auto-refresh component (hidden from user)
-        if ctx.state.playing:
-            st.empty()  # Trigger refresh
+                    time.sleep(0.1)  # Small delay to prevent excessive updates
+            else:
+                status_placeholder.info("▶️ **Camera not started**")
+                result_text_placeholder.markdown("### Click START to begin")
+                confidence_placeholder.empty()
+                progress_placeholder.empty()
+                all_results_placeholder.empty()
 
         st.markdown(
             """
