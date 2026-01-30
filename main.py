@@ -1,44 +1,37 @@
 import streamlit as st
 import numpy as np
-from PIL import Image, ImageDraw
-import tf_keras
-from tf_keras.layers import DepthwiseConv2D
-from streamlit_webrtc import webrtc_streamer, WebRtcMode
-import av
-import queue
-from typing import List
-import time
+from PIL import Image
+
+# Set page config FIRST
+st.set_page_config(page_title="Flower Classification", page_icon="🌸", layout="wide")
 
 
-# Custom DepthwiseConv2D to handle 'groups' parameter issue
-class CustomDepthwiseConv2D(DepthwiseConv2D):
-    def __init__(self, **kwargs):
-        kwargs.pop("groups", None)
-        super().__init__(**kwargs)
-
-
-# Load the model and labels
+# Lazy imports to avoid conflicts
 @st.cache_resource
-def load_model():
-    model_path = "converted_keras/keras_model.h5"
+def get_model_and_labels():
+    """Load TensorFlow and model in isolated way"""
+    import tf_keras
+    from tf_keras.layers import DepthwiseConv2D
+
+    class CustomDepthwiseConv2D(DepthwiseConv2D):
+        def __init__(self, **kwargs):
+            kwargs.pop("groups", None)
+            super().__init__(**kwargs)
+
     model = tf_keras.models.load_model(
-        model_path,
+        "converted_keras/keras_model.h5",
         custom_objects={"DepthwiseConv2D": CustomDepthwiseConv2D},
         compile=False,
     )
-    return model
 
-
-@st.cache_data
-def load_labels():
-    labels_path = "converted_keras/labels.txt"
     labels = {}
-    with open(labels_path, "r") as f:
+    with open("converted_keras/labels.txt", "r") as f:
         for line in f:
             parts = line.strip().split(" ", 1)
             if len(parts) == 2:
                 labels[int(parts[0])] = parts[1]
-    return labels
+
+    return model, labels
 
 
 def preprocess_image(image):
@@ -51,179 +44,199 @@ def preprocess_image(image):
     return img_array
 
 
-def predict_flower(model, image, labels):
-    processed_img = preprocess_image(image)
-    predictions = model.predict(processed_img, verbose=0)
+def predict(model, image, labels):
+    processed = preprocess_image(image)
+    predictions = model.predict(processed, verbose=0)
     predicted_class = np.argmax(predictions[0])
-    confidence = predictions[0][predicted_class]
-    results = []
-    for i, prob in enumerate(predictions[0]):
-        if i in labels:
-            results.append((labels[i], prob))
+    confidence = float(predictions[0][predicted_class])
+
+    results = [
+        (labels[i], float(predictions[0][i]))
+        for i in range(len(predictions[0]))
+        if i in labels
+    ]
     results.sort(key=lambda x: x[1], reverse=True)
+
     return labels[predicted_class], confidence, results
 
 
-# Global frame queue for real-time processing
-frame_queue: "queue.Queue[av.VideoFrame]" = queue.Queue(maxsize=1)
-result_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=1)
-
-
-def video_frame_callback(frame: av.VideoFrame) -> av.VideoFrame:
-    """Callback that captures frames for processing"""
-    img = frame.to_ndarray(format="bgr24")
-
-    # Put frame in queue (non-blocking, replace old frame)
-    try:
-        frame_queue.get_nowait()
-    except queue.Empty:
-        pass
-
-    try:
-        frame_queue.put_nowait(frame)
-    except queue.Full:
-        pass
-
-    # Get latest result if available
-    try:
-        label, confidence, color = result_queue.get_nowait()
-
-        # Draw on frame
-        # Draw background rectangle
-        img[5:55, 5:350] = color
-
-        # Add text using PIL
-        pil_img = Image.fromarray(img)
-        draw = ImageDraw.Draw(pil_img)
-        text = f"{label}: {confidence * 100:.1f}%"
-        draw.text((15, 15), text, fill=(255, 255, 255))
-        img = np.array(pil_img)
-
-    except queue.Empty:
-        pass
-
-    return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-
 def main():
-    st.set_page_config(
-        page_title="Flower Classification", page_icon="🌸", layout="wide"
-    )
-
     st.title("🌸 Real-Time Flower Classification")
-    st.write(
-        "Point your camera at a **Tulip**, **Rose**, or **Sunflower** for real-time detection!"
-    )
 
-    # Load model and labels
+    # Load model
     try:
-        model = load_model()
-        labels = load_labels()
-        st.success("✅ Model loaded successfully!")
+        model, labels = get_model_and_labels()
     except Exception as e:
         st.error(f"Error loading model: {e}")
         return
 
-    # Create two columns
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        st.subheader("📹 Live Camera Feed")
-
-        # WebRTC streamer
-        ctx = webrtc_streamer(
-            key="flower-detection",
-            mode=WebRtcMode.SENDRECV,
-            video_frame_callback=video_frame_callback,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-            rtc_configuration={
-                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-            },
-        )
-
-    with col2:
-        st.subheader("🔍 Detection Results")
-
-        # Placeholders for results
-        result_container = st.empty()
-        confidence_container = st.empty()
-        progress_container = st.empty()
-
-        # Legend
+    # Sidebar with instructions
+    with st.sidebar:
+        st.header("ℹ️ Instructions")
         st.markdown(
             """
-        ---
-        **Confidence Legend:**
-        - 🟢 High (>70%)
-        - 🟠 Medium (40-70%)
-        - 🔴 Low (<40%)
+        1. Click **Start Real-Time Detection**
+        2. Allow camera access
+        3. Point camera at a flower
+        4. See instant predictions!
+        
+        **Supported Flowers:**
+        - 🌷 Tulip
+        - 🌹 Rose  
+        - 🌻 Sunflower
         """
         )
 
-    # Real-time inference loop
-    if ctx.state.playing:
-        st.info("🎥 Camera is active! Processing frames...")
+        st.markdown("---")
+        st.markdown("**Confidence Legend:**")
+        st.markdown("- 🟢 High (>70%)")
+        st.markdown("- 🟠 Medium (40-70%)")
+        st.markdown("- 🔴 Low (<40%)")
 
-        while ctx.state.playing:
-            try:
-                # Get frame from queue
-                frame = frame_queue.get(timeout=0.1)
+    # Main content
+    tab1, tab2 = st.tabs(["📹 Real-Time Camera", "📁 Upload Image"])
+
+    with tab1:
+        # Import webrtc only when needed (lazy import)
+        try:
+            from streamlit_webrtc import webrtc_streamer, WebRtcMode
+            import av
+
+            st.info("🎥 Click **START** below to begin real-time detection!")
+
+            # Result placeholders
+            col1, col2 = st.columns([2, 1])
+
+            with col2:
+                result_box = st.empty()
+                confidence_box = st.empty()
+                details_box = st.empty()
+
+            # Frame counter for periodic inference
+            if "frame_count" not in st.session_state:
+                st.session_state.frame_count = 0
+                st.session_state.last_result = None
+
+            def video_callback(frame):
                 img = frame.to_ndarray(format="bgr24")
 
-                # Convert BGR to RGB
-                img_rgb = img[:, :, ::-1]
-                pil_image = Image.fromarray(img_rgb)
+                # Run inference every 10 frames to reduce load
+                st.session_state.frame_count += 1
 
-                # Run prediction
-                predicted_label, confidence, all_results = predict_flower(
-                    model, pil_image, labels
-                )
+                if st.session_state.frame_count % 10 == 0:
+                    try:
+                        # Convert BGR to RGB
+                        img_rgb = img[:, :, ::-1]
+                        pil_image = Image.fromarray(img_rgb)
 
-                # Determine color based on confidence
-                if confidence > 0.7:
-                    color = [0, 200, 0]  # Green
-                    emoji = "🌸"
-                elif confidence > 0.4:
-                    color = [255, 165, 0]  # Orange
-                    emoji = "🤔"
-                else:
-                    color = [255, 0, 0]  # Red
-                    emoji = "❓"
+                        # Predict
+                        label, conf, results = predict(model, pil_image, labels)
+                        st.session_state.last_result = (label, conf, results)
 
-                # Send result to video callback
-                try:
-                    result_queue.get_nowait()
-                except queue.Empty:
-                    pass
-                result_queue.put_nowait((predicted_label, confidence, color))
-
-                # Update UI
-                with result_container:
-                    if confidence > 0.7:
-                        st.success(f"### {emoji} {predicted_label}")
-                    elif confidence > 0.4:
-                        st.warning(f"### {emoji} {predicted_label}")
-                    else:
-                        st.error(f"### {emoji} {predicted_label}")
-
-                with confidence_container:
-                    st.metric("Confidence", f"{confidence * 100:.1f}%")
-
-                with progress_container:
-                    for label, prob in all_results:
-                        prefix = "🟢" if prob > 0.7 else "🟠" if prob > 0.4 else "🔴"
-                        st.progress(
-                            float(prob), text=f"{prefix} {label}: {prob * 100:.1f}%"
+                        # Draw on frame
+                        color = (
+                            (0, 255, 0)
+                            if conf > 0.7
+                            else (0, 165, 255) if conf > 0.4 else (0, 0, 255)
                         )
 
-                time.sleep(0.1)  # Small delay to prevent overwhelming
+                        # Draw rectangle and text
+                        img[10:60, 10:400] = color
 
-            except queue.Empty:
-                continue
-            except Exception as e:
-                st.error(f"Error: {e}")
-                break
+                    except Exception:
+                        pass
+
+                return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+            with col1:
+                ctx = webrtc_streamer(
+                    key="flower-detect",
+                    mode=WebRtcMode.SENDRECV,
+                    video_frame_callback=video_callback,
+                    media_stream_constraints={"video": True, "audio": False},
+                    async_processing=True,
+                    rtc_configuration={
+                        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+                    },
+                )
+
+            # Update results display
+            if ctx.state.playing and st.session_state.last_result:
+                label, conf, results = st.session_state.last_result
+
+                with result_box:
+                    if conf > 0.7:
+                        st.success(f"### 🌸 {label}")
+                    elif conf > 0.4:
+                        st.warning(f"### 🤔 {label}")
+                    else:
+                        st.error(f"### ❓ {label}")
+
+                with confidence_box:
+                    st.metric("Confidence", f"{conf * 100:.1f}%")
+
+                with details_box:
+                    for lbl, prob in results:
+                        prefix = "🟢" if prob > 0.7 else "🟠" if prob > 0.4 else "🔴"
+                        st.progress(prob, text=f"{prefix} {lbl}: {prob*100:.1f}%")
+
+        except ImportError:
+            st.warning(
+                "Real-time video not available. Using camera capture mode instead."
+            )
+
+            # Fallback to camera input
+            camera_image = st.camera_input("📸 Take a photo")
+
+            if camera_image:
+                image = Image.open(camera_image)
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    st.image(image, use_container_width=True)
+
+                with col2:
+                    label, conf, results = predict(model, image, labels)
+
+                    if conf > 0.7:
+                        st.success(f"### 🌸 {label}")
+                    elif conf > 0.4:
+                        st.warning(f"### 🤔 {label}")
+                    else:
+                        st.error(f"### ❓ {label}")
+
+                    st.metric("Confidence", f"{conf * 100:.1f}%")
+
+                    for lbl, prob in results:
+                        prefix = "🟢" if prob > 0.7 else "🟠" if prob > 0.4 else "🔴"
+                        st.progress(prob, text=f"{prefix} {lbl}: {prob*100:.1f}%")
+
+    with tab2:
+        uploaded = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+
+        if uploaded:
+            image = Image.open(uploaded)
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                st.image(image, caption="Uploaded Image", use_container_width=True)
+
+            with col2:
+                with st.spinner("Analyzing..."):
+                    label, conf, results = predict(model, image, labels)
+
+                if conf > 0.7:
+                    st.success(f"### 🌸 {label}")
+                elif conf > 0.4:
+                    st.warning(f"### 🤔 {label}")
+                else:
+                    st.error(f"### ❓ {label}")
+
+                st.metric("Confidence", f"{conf * 100:.1f}%")
+
+                for lbl, prob in results:
+                    prefix = "🟢" if prob > 0.7 else "🟠" if prob > 0.4 else "🔴"
+                    st.progress(prob, text=f"{prefix} {lbl}: {prob*100:.1f}%")
 
 
 if __name__ == "__main__":
