@@ -3,3 +3,6 @@ tensorflow
 tf-keras
 pillow
 numpy
+streamlit-webrtc
+opencv-python-headless
+av

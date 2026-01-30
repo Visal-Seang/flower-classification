@@ -3,6 +3,9 @@ import numpy as np
 from PIL import Image
 import tf_keras
 from tf_keras.layers import DepthwiseConv2D
+import av
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
+import cv2
 
 
 # Custom DepthwiseConv2D to handle 'groups' parameter issue
@@ -103,35 +106,68 @@ def main():
     tab1, tab2 = st.tabs(["📷 Webcam", "📁 Upload Image"])
 
     with tab1:
-        st.write("### Take a Photo for Flower Detection")
+        st.write("### Real-time Flower Detection")
+        st.info("Allow camera access and click START to begin real-time detection")
 
-        # Use Streamlit's camera input (works on cloud)
-        camera_image = st.camera_input("📷 Take a picture")
+        # Create a class to process video frames
+        class VideoProcessor:
+            def __init__(self):
+                self.model = model
+                self.labels = labels
+                self.result_text = ""
+                self.confidence = 0.0
 
-        if camera_image is not None:
-            # Open the captured image
-            image = Image.open(camera_image)
+            def recv(self, frame):
+                img = frame.to_ndarray(format="bgr24")
 
-            col1, col2 = st.columns(2)
+                # Convert BGR to RGB
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            with col1:
-                st.image(image, caption="Captured Image", use_container_width=True)
+                # Convert to PIL Image for prediction
+                pil_image = Image.fromarray(img_rgb)
 
-            with col2:
                 # Make prediction
-                with st.spinner("Analyzing..."):
-                    predicted_label, confidence, all_results = predict_flower(
-                        model, image, labels
-                    )
+                processed_img = preprocess_image(pil_image)
+                predictions = self.model.predict(processed_img, verbose=0)
 
-                # Display results
-                st.success(f"**Prediction: {predicted_label}**")
-                st.metric("Confidence", f"{confidence * 100:.2f}%")
+                predicted_class = np.argmax(predictions[0])
+                confidence = predictions[0][predicted_class]
+                predicted_label = self.labels[predicted_class]
 
-                # Show all predictions
-                st.write("**All Predictions:**")
-                for label, prob in all_results:
-                    st.progress(float(prob), text=f"{label}: {prob * 100:.2f}%")
+                # Draw prediction on frame
+                color = (
+                    (0, 255, 0)
+                    if confidence > 0.7
+                    else (0, 165, 255) if confidence > 0.4 else (0, 0, 255)
+                )
+
+                cv2.putText(
+                    img,
+                    f"{predicted_label}: {confidence * 100:.1f}%",
+                    (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2,
+                    color,
+                    3,
+                )
+
+                # Add colored border based on confidence
+                img = cv2.copyMakeBorder(
+                    img, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=color
+                )
+
+                return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+        webrtc_streamer(
+            key="flower-detection",
+            mode=WebRtcMode.SENDRECV,
+            video_processor_factory=VideoProcessor,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+            rtc_configuration={
+                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+            },
+        )
 
     with tab2:
         # File uploader - only accepts single image
