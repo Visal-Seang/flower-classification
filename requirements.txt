@@ -2,6 +2,4 @@ streamlit
 tensorflow
 tf-keras
 pillow
-numpy<2
-streamlit-webrtc
-av
+numpy

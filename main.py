@@ -3,9 +3,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 import tf_keras
 from tf_keras.layers import DepthwiseConv2D
-import av
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
-import threading
 
 
 # Custom DepthwiseConv2D to handle 'groups' parameter issue
@@ -66,7 +63,7 @@ def predict_flower(model, image, labels):
     processed_img = preprocess_image(image)
 
     # Make prediction
-    predictions = model.predict(processed_img)
+    predictions = model.predict(processed_img, verbose=0)
 
     # Get the predicted class
     predicted_class = np.argmax(predictions[0])
@@ -103,86 +100,79 @@ def main():
         return
 
     # Create tabs for different input methods
-    tab1, tab2 = st.tabs(["📷 Webcam", "📁 Upload Image"])
+    tab1, tab2 = st.tabs(["📷 Camera", "📁 Upload Image"])
 
     with tab1:
-        st.write("### Real-time Flower Detection")
+        st.write("### 📸 Camera Detection")
         st.info(
-            "🎥 Click START to begin real-time detection. Allow camera access when prompted."
+            "Take a photo to classify the flower. For best results, ensure good lighting and center the flower in frame."
         )
 
-        # Lock for thread-safe model inference
-        lock = threading.Lock()
+        # Camera input
+        camera_image = st.camera_input("Point your camera at a flower and take a photo")
 
-        # Video processor class for real-time detection
-        class FlowerDetector(VideoProcessorBase):
-            def __init__(self):
-                self.result_label = ""
-                self.result_confidence = 0.0
+        if camera_image is not None:
+            # Open the captured image
+            image = Image.open(camera_image)
 
-            def recv(self, frame):
-                img = frame.to_ndarray(format="bgr24")
+            # Make prediction
+            predicted_label, confidence, all_results = predict_flower(
+                model, image, labels
+            )
 
-                # Convert BGR to RGB for prediction
-                img_rgb = img[:, :, ::-1]  # BGR to RGB without cv2
-                pil_image = Image.fromarray(img_rgb)
+            # Create columns for layout
+            col1, col2 = st.columns(2)
 
-                # Thread-safe model inference
-                with lock:
-                    processed_img = preprocess_image(pil_image)
-                    predictions = model.predict(processed_img, verbose=0)
+            with col1:
+                # Add prediction overlay to image
+                img_display = image.copy()
+                draw = ImageDraw.Draw(img_display)
 
-                predicted_class = np.argmax(predictions[0])
-                confidence = float(predictions[0][predicted_class])
-                predicted_label = labels.get(predicted_class, "Unknown")
-
-                self.result_label = predicted_label
-                self.result_confidence = confidence
-
-                # Set color based on confidence (BGR format)
+                # Set color based on confidence
                 if confidence > 0.7:
-                    color = (0, 255, 0)  # Green
+                    color = (0, 200, 0)  # Green
+                    emoji = "🌸"
                 elif confidence > 0.4:
-                    color = (0, 165, 255)  # Orange
+                    color = (255, 165, 0)  # Orange
+                    emoji = "🤔"
                 else:
-                    color = (0, 0, 255)  # Red
+                    color = (255, 0, 0)  # Red
+                    emoji = "❓"
 
-                # Draw text on frame using PIL (no cv2 needed)
-                pil_frame = Image.fromarray(img)
-                draw = ImageDraw.Draw(pil_frame)
+                # Draw result on image
+                draw.rectangle([0, 0, img_display.width, 40], fill=color)
+                draw.text(
+                    (10, 10),
+                    f"{predicted_label}: {confidence * 100:.1f}%",
+                    fill=(255, 255, 255),
+                )
 
-                # Draw background rectangle for text
-                text = f"{predicted_label}: {confidence * 100:.1f}%"
-                draw.rectangle([5, 5, 350, 50], fill=color)
-                draw.text((10, 10), text, fill=(255, 255, 255))
+                st.image(
+                    img_display, caption="Captured Image", use_container_width=True
+                )
 
-                # Convert back to numpy array
-                img = np.array(pil_frame)
+            with col2:
+                # Display results
+                st.markdown(f"### {emoji} **{predicted_label}**")
+                st.metric("Confidence", f"{confidence * 100:.1f}%")
 
-                return av.VideoFrame.from_ndarray(img, format="bgr24")
+                # Show all predictions with progress bars
+                st.write("**All Predictions:**")
+                for label, prob in all_results:
+                    if prob > 0.7:
+                        st.progress(float(prob), text=f"🟢 {label}: {prob * 100:.1f}%")
+                    elif prob > 0.4:
+                        st.progress(float(prob), text=f"🟠 {label}: {prob * 100:.1f}%")
+                    else:
+                        st.progress(float(prob), text=f"🔴 {label}: {prob * 100:.1f}%")
 
-        # WebRTC streamer for real-time video
-        ctx = webrtc_streamer(
-            key="flower-detector",
-            mode=WebRtcMode.SENDRECV,
-            video_processor_factory=FlowerDetector,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-            rtc_configuration={
-                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-            },
-        )
-
-        st.markdown(
-            """
-        **Legend:**
-        - 🟢 Green = High confidence (>70%)
-        - 🟠 Orange = Medium confidence (40-70%)
-        - 🔴 Red = Low confidence (<40%)
-        """
-        )
+            # Add button to take another photo
+            st.markdown("---")
+            st.info("👆 Click the camera button above to take another photo!")
 
     with tab2:
+        st.write("### 📁 Upload Image")
+
         # File uploader - only accepts single image
         uploaded_file = st.file_uploader(
             "Choose an image...",
@@ -206,14 +196,27 @@ def main():
                         model, image, labels
                     )
 
+                # Set emoji based on confidence
+                if confidence > 0.7:
+                    emoji = "🌸"
+                elif confidence > 0.4:
+                    emoji = "🤔"
+                else:
+                    emoji = "❓"
+
                 # Display results
-                st.success(f"**Prediction: {predicted_label}**")
+                st.markdown(f"### {emoji} **{predicted_label}**")
                 st.metric("Confidence", f"{confidence * 100:.2f}%")
 
                 # Show all predictions
                 st.write("**All Predictions:**")
                 for label, prob in all_results:
-                    st.progress(float(prob), text=f"{label}: {prob * 100:.2f}%")
+                    if prob > 0.7:
+                        st.progress(float(prob), text=f"🟢 {label}: {prob * 100:.1f}%")
+                    elif prob > 0.4:
+                        st.progress(float(prob), text=f"🟠 {label}: {prob * 100:.1f}%")
+                    else:
+                        st.progress(float(prob), text=f"🔴 {label}: {prob * 100:.1f}%")
 
 
 if __name__ == "__main__":
