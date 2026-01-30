@@ -3,3 +3,5 @@ tensorflow
 tf-keras
 pillow
 numpy
+streamlit-webrtc
+av
