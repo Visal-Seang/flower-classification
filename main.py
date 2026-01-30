@@ -5,6 +5,7 @@ import tf_keras
 from tf_keras.layers import DepthwiseConv2D
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase
 import av
+import time
 
 st.set_page_config(page_title="Flower Classification", page_icon="🌸", layout="wide")
 
@@ -48,15 +49,16 @@ def preprocess_image(image):
 # Load model and labels globally for the video processor
 MODEL = None
 LABELS = None
-LATEST_RESULT = {"label": "", "confidence": 0.0, "all_results": []}
 
 
 class FlowerDetector(VideoProcessorBase):
     def __init__(self):
         self.model = MODEL
+        self.labels = LABELS
         self.result_label = ""
         self.result_confidence = 0.0
-        self.labels = LABELS
+        self.all_results = []
+        self.last_update = time.time()
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         # Convert frame to numpy array (BGR format)
@@ -75,14 +77,14 @@ class FlowerDetector(VideoProcessorBase):
             confidence = float(predictions[0][predicted_class])
             label = self.labels.get(predicted_class, "Unknown")
 
-            # Store results globally for display
-            all_results = sorted(
+            # Store results in instance variables
+            self.result_label = label
+            self.result_confidence = confidence
+            self.all_results = sorted(
                 [(self.labels[i], float(predictions[0][i])) for i in self.labels],
                 key=lambda x: -x[1],
             )
-            LATEST_RESULT["label"] = label
-            LATEST_RESULT["confidence"] = confidence
-            LATEST_RESULT["all_results"] = all_results
+            self.last_update = time.time()
 
             # Choose color based on confidence (BGR format for OpenCV)
             if confidence > 0.7:
@@ -197,22 +199,79 @@ def main():
                 },
             )
 
-        # Display detection results as text (exactly like the image)
-        if LATEST_RESULT["label"]:
-            conf = LATEST_RESULT["confidence"]
-            label = LATEST_RESULT["label"]
+        # Create placeholders for real-time updates
+        status_placeholder = st.empty()
+        main_result_placeholder = st.empty()
+        progress_placeholder = st.empty()
+        all_results_placeholder = st.empty()
 
-            # Green box with detected result
-            st.success(f"Detected: {label} (Confidence: {conf * 100:.1f}%)")
+        # Display detection results with auto-refresh
+        if ctx.state.playing:
+            # Continuous update loop while video is playing
+            while ctx.state.playing:
+                if ctx.video_processor:
+                    processor = ctx.video_processor
 
-            # Simple text below showing percentage
-            st.write(f"{label}: {conf * 100:.1f}%")
+                    if (
+                        processor.result_label
+                        and (time.time() - processor.last_update) < 2
+                    ):
+                        # Show active detection
+                        conf = processor.result_confidence
+                        label = processor.result_label
 
-            # Progress bar showing confidence
-            st.progress(conf)
+                        # Main result with appropriate styling
+                        if conf > 0.7:
+                            status_placeholder.success(
+                                f"✅ Detected: **{label}** (Confidence: {conf * 100:.1f}%)"
+                            )
+                        elif conf > 0.4:
+                            status_placeholder.warning(
+                                f"⚠️ Detected: **{label}** (Confidence: {conf * 100:.1f}%)"
+                            )
+                        else:
+                            status_placeholder.error(
+                                f"❓ Detected: **{label}** (Confidence: {conf * 100:.1f}%)"
+                            )
+
+                        # Large text display
+                        main_result_placeholder.markdown(
+                            f"## {label}: {conf * 100:.1f}%"
+                        )
+
+                        # Progress bar
+                        progress_placeholder.progress(
+                            conf, text=f"Confidence: {conf * 100:.1f}%"
+                        )
+
+                        # All predictions
+                        with all_results_placeholder.container():
+                            st.markdown("**📊 All Predictions:**")
+                            for lbl, prob in processor.all_results[:3]:  # Top 3
+                                icon = (
+                                    "🟢" if prob > 0.7 else "🟠" if prob > 0.4 else "🔴"
+                                )
+                                st.progress(
+                                    prob, text=f"{icon} {lbl}: {prob * 100:.1f}%"
+                                )
+                    else:
+                        # Show waiting message
+                        status_placeholder.info(
+                            "🔍 Camera active... Point at a flower to detect"
+                        )
+                        main_result_placeholder.empty()
+                        progress_placeholder.empty()
+                        all_results_placeholder.empty()
+                else:
+                    status_placeholder.info("🎥 Initializing camera...")
+                    main_result_placeholder.empty()
+                    progress_placeholder.empty()
+                    all_results_placeholder.empty()
+
+                # Small delay to prevent excessive updates
+                time.sleep(0.1)
         else:
-            # Show testing message when camera is on but no detection yet
-            st.info("🔍 Testing camera... Point at a flower to detect")
+            status_placeholder.info("▶️ Click START above to begin detection")
 
         st.markdown(
             """
