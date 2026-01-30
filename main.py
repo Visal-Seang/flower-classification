@@ -473,25 +473,19 @@ def main():
                     "iceServers": [
                         {"urls": ["stun:stun.l.google.com:19302"]},
                         {"urls": ["stun:stun1.l.google.com:19302"]},
-                        {"urls": ["stun:stun2.l.google.com:19302"]},
-                        {"urls": ["stun:stun3.l.google.com:19302"]},
-                        {"urls": ["stun:stun4.l.google.com:19302"]},
+                        {"urls": ["stun:global.stun.twilio.com:3478"]},
                         {
-                            "urls": ["turn:openrelay.metered.ca:80"],
-                            "username": "openrelayproject",
-                            "credential": "openrelayproject",
+                            "urls": [
+                                "turn:a.relay.metered.ca:80",
+                                "turn:a.relay.metered.ca:80?transport=tcp",
+                                "turn:a.relay.metered.ca:443",
+                                "turn:a.relay.metered.ca:443?transport=tcp",
+                            ],
+                            "username": "e8dd65b92e4bd3d5c0b58d42",
+                            "credential": "uWdxUCn0/ZULohEj",
                         },
-                        {
-                            "urls": ["turn:openrelay.metered.ca:443"],
-                            "username": "openrelayproject",
-                            "credential": "openrelayproject",
-                        },
-                        {
-                            "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
-                            "username": "openrelayproject",
-                            "credential": "openrelayproject",
-                        },
-                    ]
+                    ],
+                    "iceTransportPolicy": "all",
                 },
             )
 
