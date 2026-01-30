@@ -59,6 +59,9 @@ class FlowerDetector(VideoProcessorBase):
         self.labels = LABELS
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        if frame is None:
+            return frame
+
         # Convert frame to numpy array (BGR format)
         img = frame.to_ndarray(format="bgr24")
 
@@ -68,6 +71,9 @@ class FlowerDetector(VideoProcessorBase):
 
         # Run prediction
         try:
+            if self.model is None or self.labels is None:
+                return av.VideoFrame.from_ndarray(img, format="bgr24")
+
             processed = preprocess_image(pil_image)
             predictions = self.model.predict(processed, verbose=0)
 
@@ -187,7 +193,6 @@ def main():
                         "width": {"ideal": 640},
                         "height": {"ideal": 480},
                         "frameRate": {"ideal": 30},
-                        "facingMode": "environment",  # Use back camera on mobile
                     },
                     "audio": False,
                 },
@@ -196,6 +201,10 @@ def main():
                     "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
                 },
             )
+
+            # Show status when connection is active
+            if ctx and ctx.state.playing:
+                st.success("🎥 Camera is active!")
 
         # Display detection results as text
         st.markdown("---")
